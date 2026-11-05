@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAnonymousReporter() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    function isOperator() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'rossinsonia2@gmail.com',
+          'riccardo.rovea@gmail.com',
+          'francescosiino73@gmail.com',
+          'fabriziorinaldi999@gmail.com',
+          'francescapaoluzzi243@gmail.com'
+        ];
+    }
+
+    function isCoordinator() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'fabriziorinaldi999@gmail.com',
+          'francescapaoluzzi243@gmail.com'
+        ];
+    }
+
+    function operatorName() {
+      return request.auth.token.email == 'rossinsonia2@gmail.com' ? 'Granato Maurizio' :
+        request.auth.token.email == 'riccardo.rovea@gmail.com' ? 'Rovea Riccardo' :
+        request.auth.token.email == 'francescosiino73@gmail.com' ? 'Siino Francesco' :
+        request.auth.token.email == 'fabriziorinaldi999@gmail.com' ? 'Rinaldi Fabrizio' :
+        'Paoluzzi Francesca';
+    }
+
+    function isOwnTakeChargeUpdate() {
+      return request.resource.data.stato == 'In lavorazione'
+        && request.resource.data.chiHaPresoInCarico is list
+        && request.resource.data.chiHaPresoInCarico.hasAny([operatorName()])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'incaricato', 'stato', 'presaInCarico', 'chiHaPresoInCarico',
+          'cronologia', 'ultimoAggiornamento'
+        ]);
+    }
+
+    match /segnalazioni/{ticketId} {
+      // Il personale senza account può soltanto inserire una nuova segnalazione.
+      allow create: if isAnonymousReporter()
+        && request.resource.data.stato == 'Nuova'
+        && request.resource.data.segnalante is string
+        && request.resource.data.descrizione is string;
+
+      // Solo i cinque operatori autorizzati possono leggere l'archivio.
+      allow read: if isOperator();
+
+      // Gli operatori possono aggiornare le segnalazioni; l'assegnazione è riservata ai coordinatori.
+      allow update: if isOperator()
+        && (isCoordinator()
+            || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['incaricato'])
+            || isOwnTakeChargeUpdate());
+
+      allow delete: if false;
+
+      match /foto/{photoId} {
+        allow create: if isAnonymousReporter()
+          && photoId == 'principale'
+          && request.resource.data.dataUrl is string
+          && request.resource.data.dataUrl.size() < 800000;
+        allow read: if isOperator();
+        allow update, delete: if false;
+      }
+    }
+  }
+}
