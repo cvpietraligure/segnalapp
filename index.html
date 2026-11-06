@@ -8,6 +8,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- SheetJS: creazione gratuita di file Excel .xlsx direttamente nel browser -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -243,8 +245,8 @@
                         <h2 class="text-xl font-bold text-slate-900">Elenco Segnalazioni</h2>
                     </div>
                     <div class="flex items-center gap-2 w-full md:w-auto">
-                        <button onclick="exportCSV()" class="bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow transition">
-                            <i class="fa-solid fa-file-excel text-emerald-400"></i> Esporta CSV
+                        <button onclick="exportExcel()" class="bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow transition">
+                            <i class="fa-solid fa-file-excel text-emerald-400"></i> Esporta Excel (.xlsx)
                         </button>
                         <button onclick="resetFilters()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2 transition">
                             <i class="fa-solid fa-rotate-right"></i> Reset Filtri
@@ -777,11 +779,110 @@
             catch(e){alert('Non è stato possibile aggiornare la segnalazione. Verifica i permessi del tuo profilo.');}
         }
         function changeRole(){ /* I profili non sono selezionabili dall'interfaccia. */ }
-        function exportCSV(){
-            const rows=[['ID','Data','Segnalante','Macroarea','Spazio','Tipologia','Descrizione','Priorità','Incaricato','Stato']];
-            tickets.forEach(t=>rows.push([t.id,t.data,t.segnalante,t.macroarea,t.spazio,t.tipologia,t.descrizione,t.priorita,t.incaricato,t.stato]));
-            const csv='\uFEFF'+rows.map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(';')).join('\r\n');
-            const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));const a=document.createElement('a');a.href=url;a.download='segnalAPP_esportazione.csv';a.click();URL.revokeObjectURL(url);
+        function exportExcel(){
+            if (typeof XLSX === 'undefined') {
+                alert('La funzione Excel non è disponibile. Controlla la connessione e riprova.');
+                return;
+            }
+            if (!tickets.length) {
+                alert('Non ci sono segnalazioni da esportare.');
+                return;
+            }
+
+            const textValue = value => {
+                if (value === null || value === undefined) return '';
+                if (Array.isArray(value)) return value.join(', ');
+                if (typeof value === 'object') return JSON.stringify(value);
+                return String(value);
+            };
+            const allTickets = [...tickets].sort((a,b) => (a.data || '').localeCompare(b.data || ''));
+
+            // FOGLIO 1: una riga per ogni segnalazione.
+            const ticketRows = allTickets.map(t => ({
+                'Codice': t.id,
+                'Data inserimento': textValue(t.data),
+                'Segnalante': textValue(t.segnalante),
+                'Macroarea': textValue(t.macroarea),
+                'Luogo': textValue(t.spazio),
+                'Tipologia intervento': textValue(t.tipologia),
+                'Descrizione': textValue(t.descrizione),
+                'Priorità': textValue(t.priorita),
+                'Incaricato/i': textValue(t.incaricato),
+                'Stato attuale': textValue(t.stato),
+                'Data e ora presa in carico': textValue(t.presaInCarico),
+                'Chi ha preso in carico': textValue(t.chiHaPresoInCarico),
+                'Data e ora chiusura': textValue(t.dataChiusura),
+                'Chi ha risolto/gestito': textValue(t.chiHaRisolto),
+                'Esito': textValue(t.esito),
+                'Note di lavorazione': textValue(t.noteLavorazione),
+                'Ultimo aggiornamento': textValue(t.ultimoAggiornamento)
+            }));
+
+            // FOGLIO 2: ogni evento della cronologia diventa una riga autonoma.
+            const historyRows = [];
+            allTickets.forEach(t => {
+                (Array.isArray(t.cronologia) ? t.cronologia : []).forEach(event => {
+                    historyRows.push({
+                        'Codice segnalazione': t.id,
+                        'Data e ora': textValue(event.data),
+                        'Operatore': textValue(event.utente),
+                        'Operazione / nota': textValue(event.azione)
+                    });
+                });
+            });
+            historyRows.sort((a,b) => a['Data e ora'].localeCompare(b['Data e ora']));
+
+            // FOGLIO 3: fotografia riepilogativa al momento dell'esportazione.
+            const countBy = (items, getter) => {
+                const counts = new Map();
+                items.forEach(item => {
+                    const key = textValue(getter(item)).trim() || 'Non indicato';
+                    counts.set(key, (counts.get(key) || 0) + 1);
+                });
+                return [...counts.entries()].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+            };
+            const closedStates = ['Risolta','Inoltrata al Comune','Non effettuabile'];
+            const openCount = allTickets.filter(t => !closedStates.includes(t.stato)).length;
+            const summaryRows = [
+                ['RIEPILOGO SEGNALAPP'],
+                ['Esportazione effettuata il', new Date().toLocaleString('it-IT')],
+                ['Totale segnalazioni', allTickets.length],
+                ['Segnalazioni aperte', openCount],
+                ['Segnalazioni risolte', allTickets.filter(t => t.stato === 'Risolta').length],
+                ['Inoltrate al Comune', allTickets.filter(t => t.stato === 'Inoltrata al Comune').length],
+                ['Non effettuabili', allTickets.filter(t => t.stato === 'Non effettuabile').length],
+                [],
+                ['SEGNALAZIONI PER STATO', 'Numero']
+            ];
+            countBy(allTickets, t => t.stato).forEach(([name,count]) => summaryRows.push([name,count]));
+            summaryRows.push([], ['SEGNALAZIONI PER MACROAREA', 'Numero']);
+            countBy(allTickets, t => t.macroarea).forEach(([name,count]) => summaryRows.push([name,count]));
+            summaryRows.push([], ['SEGNALAZIONI PER TIPOLOGIA', 'Numero']);
+            countBy(allTickets, t => t.tipologia).forEach(([name,count]) => summaryRows.push([name,count]));
+            summaryRows.push([], ['SEGNALAZIONI PER INCARICATO', 'Numero']);
+            const assignedCounts = new Map();
+            allTickets.forEach(t => {
+                const names = textValue(t.incaricato).split(',').map(x => x.trim()).filter(x => x && x !== 'Da assegnare');
+                names.forEach(name => assignedCounts.set(name, (assignedCounts.get(name) || 0) + 1));
+            });
+            [...assignedCounts.entries()].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).forEach(([name,count]) => summaryRows.push([name,count]));
+
+            const workbook = XLSX.utils.book_new();
+            const wsTickets = XLSX.utils.json_to_sheet(ticketRows);
+            const wsHistory = XLSX.utils.json_to_sheet(historyRows.length ? historyRows : [{'Codice segnalazione':'', 'Data e ora':'', 'Operatore':'', 'Operazione / nota':''}]);
+            const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+            wsTickets['!cols'] = [16,20,24,28,28,26,48,20,30,22,22,30,22,30,24,48,22].map(wch => ({wch}));
+            wsHistory['!cols'] = [{wch:20},{wch:22},{wch:25},{wch:70}];
+            wsSummary['!cols'] = [{wch:36},{wch:24}];
+            if (ticketRows.length) wsTickets['!autofilter'] = { ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:ticketRows.length,c:Object.keys(ticketRows[0]).length-1}}) };
+            if (historyRows.length) wsHistory['!autofilter'] = { ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:historyRows.length,c:3}}) };
+            XLSX.utils.book_append_sheet(workbook, wsTickets, 'SEGNALAZIONI');
+            XLSX.utils.book_append_sheet(workbook, wsHistory, 'CRONOLOGIA');
+            XLSX.utils.book_append_sheet(workbook, wsSummary, 'RIEPILOGO');
+
+            const date = new Date();
+            const stamp = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+            XLSX.writeFile(workbook, `segnalAPP_Archivio_${stamp}.xlsx`);
         }
         function renderArchiveTable(){
             const tbody=document.getElementById('archive-table-body');if(!tbody)return;tbody.innerHTML='';
